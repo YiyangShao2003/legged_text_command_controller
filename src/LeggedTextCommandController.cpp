@@ -69,7 +69,24 @@ controller_interface::return_type LeggedTextCommandController::update(const rclc
     lastCommandMsg->twist.linear.y = 0.0;
     lastCommandMsg->twist.angular.z = 0.0;
   }
-  command_ = commandList_.front();
+  
+  if (commandIndex_ < commandList_.size()) {
+    double elapsed_seconds = (time - lastCommandTime_).seconds();
+    // Check if the current command duration has elapsed
+    if (elapsed_seconds >= commandDurationList_[commandIndex_]) {
+      commandIndex_++; // Move to the next command
+      if (commandIndex_ < commandList_.size()) {
+        command_ = commandList_[commandIndex_]; // Update to the next command
+        lastCommandTime_ = time; // Reset the timer for the new command
+      } else {
+        // Optionally reset to the first command or stop updating commands
+        commandIndex_ = 0;
+        command_ = commandList_[commandIndex_];
+        lastCommandTime_ = time;
+      }
+      RCLCPP_INFO(get_node()->get_logger(), "Switched to command index %zu", commandIndex_);
+    }
+  }
 
   if (firstUpdate_ || (time - lastPlayTime_).seconds() >= 1. / policyFrequency_) {
     auto obs_struct = getObservations();
@@ -196,6 +213,10 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_configure(c
     commandList_.push_back(command_embedding);
     commandDurationList_.push_back(task_duration[i]);
   }
+  if (commandList_.size() != commandDurationList_.size()) {
+    RCLCPP_ERROR(get_node()->get_logger(), "commandList_ and commandDurationList_ must be of the same size.");
+    return controller_interface::CallbackReturn::ERROR;
+  }
 
   // Observation
   obsWithHistoryNames_ = get_node()->get_parameter("policy.observations.with_history").as_string_array();
@@ -267,6 +288,14 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_activate(co
   receivedVelocityMsg_.set(std::make_shared<Twist>());
   lastActions_.setZero();
   desiredPosition_ = defaultPosition_;
+
+  lastCommandTime_ = get_node()->now();
+  commandIndex_ = 0;
+  if (!commandList_.empty()) {
+    command_ = commandList_[commandIndex_];
+    RCLCPP_INFO(get_node()->get_logger(), "Activated with initial command index %zu", commandIndex_);
+  }
+
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
