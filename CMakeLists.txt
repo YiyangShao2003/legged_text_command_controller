@@ -8,6 +8,7 @@ ament_auto_find_build_dependencies()
 
 
 find_package(Eigen3 REQUIRED)
+find_package(onnxruntime REQUIRED)
 
 ament_auto_add_library(
         ${PROJECT_NAME}
@@ -20,8 +21,12 @@ target_compile_definitions(${PROJECT_NAME} PUBLIC "PLUGINLIB__DISABLE_BOOST_FUNC
 pluginlib_export_plugin_description_file(controller_interface legged_text_command_controller.xml)
 
 target_include_directories(
-        ${PROJECT_NAME} PUBLIC ${EIGEN3_INCLUDE_DIRS})
+        ${PROJECT_NAME} PUBLIC
+        ${onnxruntime_INCLUDE_DIRS}  
+        ${EIGEN3_INCLUDE_DIRS})
 
-target_link_libraries(${PROJECT_NAME} Eigen3::Eigen)
+target_link_libraries(${PROJECT_NAME}
+        ${onnxruntime_LIBRARIES}   
+        Eigen3::Eigen)
 
 ament_auto_package()
