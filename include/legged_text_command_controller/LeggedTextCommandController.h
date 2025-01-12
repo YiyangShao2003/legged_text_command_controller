@@ -64,6 +64,7 @@ class LeggedTextCommandController : public ControllerBase {
   // Command
   vector_t command_;
   std::vector<vector_t> commandList_;
+  std::vector<scalar_t> commandDurationList_;
 
   // Action
   scalar_t actionScale_{0};

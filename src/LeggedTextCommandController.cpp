@@ -184,13 +184,18 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_configure(c
   json dataSet;
   commandFile >> dataSet;
   auto task = get_node()->get_parameter("command.task").as_string_array();
+  auto task_duration = get_node()->get_parameter("command.task_duration").as_double_array();
   if (!dataSet.contains(task[0])) {
     RCLCPP_ERROR(get_node()->get_logger(), "Task '%s' not found in command file.", task[0].c_str());
     return controller_interface::CallbackReturn::ERROR;
   }
-  vector_t command_embedding = dataSet[task[0]]["embedding"][0];
-  RCLCPP_INFO(get_node()->get_logger(), "Command: %s", dataSet[task[0]]["caption"].get<std::string>().c_str());
-  commandList_.push_back(command_embedding);
+  for (size_t i = 0; i < task.size(); ++i) {
+    vector_t command_embedding = dataSet[task[i]]["embedding"][0];
+    RCLCPP_INFO(get_node()->get_logger(), "Command: %s", dataSet[task[i]]["caption"].get<std::string>().c_str());
+    RCLCPP_INFO(get_node()->get_logger(), "Duration: %f", task_duration[i]);
+    commandList_.push_back(command_embedding);
+    commandDurationList_.push_back(task_duration[i]);
+  }
 
   // Observation
   obsWithHistoryNames_ = get_node()->get_parameter("policy.observations.with_history").as_string_array();
