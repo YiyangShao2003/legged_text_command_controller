@@ -38,6 +38,8 @@ raw_data = {
     # "task84": ,
     # "task85": ,
     # "task87": ,
+    "task101": "a man walks backward, and he waves his right hand",
+    "task102": "then he turns right and walks forward",
 }
 
 dataset = {}
