@@ -9,6 +9,15 @@
 #include <std_msgs/msg/float64_multi_array.hpp>
 
 #include <deque>
+#include <memory>
+#include <algorithm>
+#include <iostream>
+#include <fstream>
+#include <string>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <atomic>
 
 #include "legged_controllers/ControllerBase.h"
 
@@ -24,6 +33,8 @@ class LeggedTextCommandController : public ControllerBase {
   using Twist = geometry_msgs::msg::TwistStamped;
 
  public:
+  ~LeggedTextCommandController();
+
   controller_interface::return_type update(const rclcpp::Time& time, const rclcpp::Duration& period) override;
 
   controller_interface::CallbackReturn on_configure(const rclcpp_lifecycle::State& previous_state) override;
@@ -37,6 +48,30 @@ class LeggedTextCommandController : public ControllerBase {
   virtual vector_t updateObsBuffer(const vector_t& observations);
   virtual vector_t playModel(const Observations& obsStructure) const;
   virtual vector_t remapJointOrder(const vector_t & policy_vector) const;
+
+  // Helper functions
+  void updateLatestObservation(const Observations& obs);
+  bool retrieveLatestAction(Eigen::VectorXd& action);
+
+  // Function executed by the model thread
+  void modelThreadFunction();
+
+  // Thread for model inference
+  std::thread modelThread_;
+
+  // Synchronization primitives
+  std::mutex modelMutex_;
+  std::condition_variable modelCv_;
+  std::atomic<bool> modelThreadRunning_{false};
+
+  // **Single Shared Observation Variable**
+  Observations latestObservation_;
+  bool newObservationAvailable_{false};
+  // **Single Shared Action Variable**
+  Eigen::VectorXd latestAction_;
+  std::mutex actionMutex_;
+  bool actionAvailable_{false};
+
 
   // Onnx
   std::shared_ptr<Ort::Env> onnxEnvPrt_;

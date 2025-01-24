@@ -30,6 +30,68 @@ namespace nlohmann {
 
 namespace legged {
 
+// Enqueue new observations by updating the latestObservation_
+void LeggedTextCommandController::updateLatestObservation(const Observations& obs) {
+  std::lock_guard<std::mutex> lock(modelMutex_);
+  latestObservation_ = obs;
+  newObservationAvailable_ = true;
+  modelCv_.notify_one();
+}
+
+// Retrieve the latest action produced by the model thread
+bool LeggedTextCommandController::retrieveLatestAction(Eigen::VectorXd& action) {
+  std::lock_guard<std::mutex> lock(actionMutex_);
+  if (actionAvailable_) {
+    action = latestAction_;
+    actionAvailable_ = false;
+    return true;
+  }
+  return false;
+}
+void LeggedTextCommandController::modelThreadFunction() {
+  while (modelThreadRunning_) {
+    Observations currentObs;
+    {
+      std::unique_lock<std::mutex> lock(modelMutex_);
+      modelCv_.wait(lock, [&]() { return newObservationAvailable_ || !modelThreadRunning_; });
+      if (!modelThreadRunning_) {
+        break;
+      }
+      if (newObservationAvailable_) {
+        currentObs = latestObservation_;
+        newObservationAvailable_ = false;
+      } else {
+        continue; // Spurious wake-up or shutdown signal
+      }
+    }
+
+    // Run model inference
+    Eigen::VectorXd action;
+    try {
+      action = playModel(currentObs);
+    } catch (const std::exception& e) {
+      RCLCPP_ERROR(get_node()->get_logger(), "Model inference failed: %s", e.what());
+      continue; // Skip to the next iteration
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(actionMutex_);
+      latestAction_ = action;
+      actionAvailable_ = true;
+    }
+  }
+
+  RCLCPP_INFO(get_node()->get_logger(), "Model thread has stopped.");
+}
+
+LeggedTextCommandController::~LeggedTextCommandController() {
+  modelThreadRunning_ = false;
+  modelCv_.notify_one();
+  if (modelThread_.joinable()) {
+    modelThread_.join();
+  }
+}
+
 void printInputsOutputs(const std::vector<const char*>& inputNames, const std::vector<std::vector<int64_t>>& inputShapes,
                         const std::vector<const char*>& outputNames, const std::vector<std::vector<int64_t>>& outputShapes) {
   std::cout << "Inputs:" << std::endl;
@@ -90,7 +152,13 @@ controller_interface::return_type LeggedTextCommandController::update(const rclc
 
   if (firstUpdate_ || (time - lastPlayTime_).seconds() >= 1. / policyFrequency_) {
     auto obs_struct = getObservations();
-    lastActions_ = playModel(obs_struct);
+    updateLatestObservation(obs_struct);
+  }
+
+  // Retrieve actions from the model thread if available
+  Eigen::VectorXd latestAction;
+  if (retrieveLatestAction(latestAction)) {
+    lastActions_ = latestAction;
 
     if (actionType_ == "position_absolute") {
       for (Eigen::Index i = 0; i < lastActions_.size(); ++i) {
@@ -117,9 +185,9 @@ controller_interface::return_type LeggedTextCommandController::update(const rclc
     if (publisherRealtime_->trylock()) {
       auto& msg = publisherRealtime_->msg_;
       msg.data.clear();
-      for (const double i : obs_struct.currentProprioception) {
-        msg.data.push_back(i);
-      }
+      // for (const double i : obs_struct.currentProprioception) {
+      //   msg.data.push_back(i);
+      // }
       for (const double i : lastActions_) {
         msg.data.push_back(i);
       }
@@ -388,6 +456,10 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_activate(co
     RCLCPP_INFO(get_node()->get_logger(), "Activated with initial command index %zu", commandIndex_);
   }
 
+  // Start the model thread
+  modelThreadRunning_ = true;
+  modelThread_ = std::thread(&LeggedTextCommandController::modelThreadFunction, this);
+
   return controller_interface::CallbackReturn::SUCCESS;
 }
 
@@ -395,6 +467,20 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_deactivate(
   if (ControllerBase::on_deactivate(previous_state) != controller_interface::CallbackReturn::SUCCESS) {
     return controller_interface::CallbackReturn::ERROR;
   }
+  // Stop the model thread
+  modelThreadRunning_ = false;
+  modelCv_.notify_one(); // Wake up the thread if waiting
+  if (modelThread_.joinable()) {
+    modelThread_.join();
+  }
+
+  // Reset action availability
+  {
+    std::lock_guard<std::mutex> lock(actionMutex_);
+    latestAction_.setZero();
+    actionAvailable_ = false;
+  }
+
   // Release the buffer
   observationBuffer_.clear();
   return controller_interface::CallbackReturn::SUCCESS;
