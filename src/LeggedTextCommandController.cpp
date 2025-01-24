@@ -193,31 +193,123 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_configure(c
   RCLCPP_INFO_STREAM(rclcpp::get_logger("LeggedTextCommandController"), "Load Onnx model from" << policyPath << " successfully !");
 
   // Command
-  std::ifstream commandFile(get_node()->get_parameter("command.command_file_path").as_string());
-  if (!commandFile.is_open()) {
-    RCLCPP_ERROR(get_node()->get_logger(), "Failed to open command file: %s", get_node()->get_parameter("command.command_file_path").as_string().c_str());
-    return controller_interface::CallbackReturn::ERROR;
-  }
-  json dataSet;
-  commandFile >> dataSet;
-  auto task = get_node()->get_parameter("command.task").as_string_array();
-  auto task_duration = get_node()->get_parameter("command.task_duration").as_double_array();
-  if (!dataSet.contains(task[0])) {
-    RCLCPP_ERROR(get_node()->get_logger(), "Task '%s' not found in command file.", task[0].c_str());
-    return controller_interface::CallbackReturn::ERROR;
-  }
-  for (size_t i = 0; i < task.size(); ++i) {
-    vector_t command_embedding = dataSet[task[i]]["embedding"][0];
-    RCLCPP_INFO(get_node()->get_logger(), "Command: %s", dataSet[task[i]]["caption"].get<std::string>().c_str());
-    RCLCPP_INFO(get_node()->get_logger(), "Duration: %f", task_duration[i]);
-    commandList_.push_back(command_embedding);
-    commandDurationList_.push_back(task_duration[i]);
-  }
-  if (commandList_.size() != commandDurationList_.size()) {
-    RCLCPP_ERROR(get_node()->get_logger(), "commandList_ and commandDurationList_ must be of the same size.");
-    return controller_interface::CallbackReturn::ERROR;
+  const auto command_file_path = get_node()->get_parameter("command.command_file_path").as_string();
+  std::ifstream commandFile(command_file_path);
+  if (!commandFile) {
+      RCLCPP_ERROR(get_node()->get_logger(), "Failed to open command file: %s", command_file_path.c_str());
+      return controller_interface::CallbackReturn::ERROR;
   }
 
+  json dataSet;
+  commandFile >> dataSet;
+
+  // Retrieve tasks and durations
+  auto tasks = get_node()->get_parameter("command.task").as_string_array();
+  auto task_durations = get_node()->get_parameter("command.task_duration").as_double_array();
+
+  // Helper lambda to trim whitespace
+  auto trim = [](std::string& s) -> void {
+      const std::string whitespace = " \t\n\r";
+      size_t start = s.find_first_not_of(whitespace);
+      size_t end = s.find_last_not_of(whitespace);
+      if (start != std::string::npos && end != std::string::npos)
+          s = s.substr(start, end - start + 1);
+      else
+          s.clear();
+  };
+
+  // Process each task
+  for (size_t i = 0; i < tasks.size(); ++i) {
+      const std::string& task_str = tasks[i];
+      double duration = (i < task_durations.size()) ? task_durations[i] : 0.0;
+
+      // Split task string into sub-tasks
+      std::vector<std::string> sub_tasks;
+      std::stringstream ss(task_str);
+      std::string sub_task;
+      while (std::getline(ss, sub_task, ';')) {
+          trim(sub_task);
+          if (!sub_task.empty()) {
+              sub_tasks.push_back(sub_task);
+          }
+      }
+
+      if (sub_tasks.empty()) {
+          RCLCPP_ERROR(get_node()->get_logger(), "No valid sub-tasks in: '%s'", task_str.c_str());
+          return controller_interface::CallbackReturn::ERROR;
+      }
+
+      vector_t combined_embedding;
+      double total_weight = 0.0;
+      size_t embedding_size = 0;
+
+      for (const auto& st : sub_tasks) {
+          // Split sub-task into task name and weight
+          size_t colon_pos = st.find(':');
+          if (colon_pos == std::string::npos) {
+              RCLCPP_ERROR(get_node()->get_logger(), "Invalid sub-task format: '%s'. Expected 'task_name:weight'.", st.c_str());
+              return controller_interface::CallbackReturn::ERROR;
+          }
+
+          std::string task_name = st.substr(0, colon_pos);
+          std::string weight_str = st.substr(colon_pos + 1);
+          trim(task_name);
+          trim(weight_str);
+
+          // Convert weight to double with default value 1.0
+          double weight = 1.0;
+          if (!weight_str.empty()) {
+              try {
+                  weight = std::stod(weight_str);
+              } catch (...) {
+                  RCLCPP_ERROR(get_node()->get_logger(), "Invalid weight '%s' for task '%s'.", weight_str.c_str(), task_name.c_str());
+                  return controller_interface::CallbackReturn::ERROR;
+              }
+          }
+
+          if (!dataSet.contains(task_name) || !dataSet[task_name].contains("embedding") || !dataSet[task_name]["embedding"].is_array() || dataSet[task_name]["embedding"].empty()) {
+              RCLCPP_ERROR(get_node()->get_logger(), "Invalid or missing embedding for task '%s'.", task_name.c_str());
+              return controller_interface::CallbackReturn::ERROR;
+          }
+
+          std::vector<double> embedding_tmp = dataSet[task_name]["embedding"][0].get<std::vector<double>>();
+          if (embedding_tmp.empty()) {
+              RCLCPP_ERROR(get_node()->get_logger(), "Empty embedding for task '%s'.", task_name.c_str());
+              return controller_interface::CallbackReturn::ERROR;
+          }
+
+          if (combined_embedding.size() == 0) {
+              embedding_size = embedding_tmp.size();
+              combined_embedding = vector_t::Zero(embedding_size);
+          } else if (embedding_tmp.size() != embedding_size) {
+              RCLCPP_ERROR(get_node()->get_logger(), "Embedding size mismatch for task '%s'. Expected %zu but got %zu.", task_name.c_str(), embedding_size, embedding_tmp.size());
+              return controller_interface::CallbackReturn::ERROR;
+          }
+
+          Eigen::Map<Eigen::VectorXd> embedding(embedding_tmp.data(), embedding_tmp.size());
+          combined_embedding += embedding * weight;
+          total_weight += weight;
+
+          std::string caption = dataSet[task_name].value("caption", "No Caption");
+          RCLCPP_INFO(get_node()->get_logger(), "Command: %s (Weight: %.2f)", caption.c_str(), weight);
+      }
+
+      if (total_weight != 0.0 && std::abs(total_weight - 1.0) > 1e-6) {
+          combined_embedding /= total_weight;
+          RCLCPP_INFO(get_node()->get_logger(), "Normalized combined embedding by total weight: %.6f", total_weight);
+      }
+
+      commandList_.emplace_back(combined_embedding);
+      commandDurationList_.emplace_back(duration);
+  }
+
+  // Validate command lists
+  if (commandList_.size() != commandDurationList_.size()) {
+      RCLCPP_ERROR(get_node()->get_logger(), "commandList_ and commandDurationList_ size mismatch.");
+      return controller_interface::CallbackReturn::ERROR;
+  }
+
+  RCLCPP_INFO(get_node()->get_logger(), "Loaded %zu commands successfully.", commandList_.size());
   // Observation
   obsWithHistoryNames_ = get_node()->get_parameter("policy.observations.with_history").as_string_array();
   obsWithoutHistoryNames_ = get_node()->get_parameter("policy.observations.without_history").as_string_array();
