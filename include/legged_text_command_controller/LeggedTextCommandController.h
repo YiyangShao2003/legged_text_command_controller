@@ -28,6 +28,11 @@ struct Observations {
     vector_t currentProprioception;
 };
 
+struct ModelReturns {
+    vector_t actions;
+    vector_t latents;
+};
+
 class LeggedTextCommandController : public ControllerBase {
   using tensor_element_t = float;
   using Twist = geometry_msgs::msg::TwistStamped;
@@ -46,12 +51,12 @@ class LeggedTextCommandController : public ControllerBase {
  protected:
   virtual Observations getObservations();
   virtual vector_t updateObsBuffer(const vector_t& observations);
-  virtual vector_t playModel(const Observations& obsStructure) const;
+  virtual ModelReturns playModel(const Observations& obsStructure) const;
   virtual vector_t remapJointOrder(const vector_t & policy_vector) const;
 
   // Helper functions
   void updateLatestObservation(const Observations& obs);
-  bool retrieveLatestAction(Eigen::VectorXd& action);
+  bool retrieveLatestAction(ModelReturns& model_returns_struct);
 
   // Function executed by the model thread
   void modelThreadFunction();
@@ -68,7 +73,8 @@ class LeggedTextCommandController : public ControllerBase {
   Observations latestObservation_;
   bool newObservationAvailable_{false};
   // **Single Shared Action Variable**
-  Eigen::VectorXd latestAction_;
+  // Eigen::VectorXd latestAction_;
+  ModelReturns latestModelReturns_;
   std::mutex actionMutex_;
   bool actionAvailable_{false};
 
@@ -77,6 +83,14 @@ class LeggedTextCommandController : public ControllerBase {
   std::ofstream obsJsonFile_;
   std::string obsFilePath_;
   std::mutex obsFileMutex_;
+
+  // Latent vector recording
+  bool logLatent_;
+  std::ofstream latentJsonFile_;
+  std::string latentFilePath_;
+  std::mutex latentFileMutex_;
+  size_t latentSize_;
+  scalar_t latentRecordTime_;
 
 
   // Onnx

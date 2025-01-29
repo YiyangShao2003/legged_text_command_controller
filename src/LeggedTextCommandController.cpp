@@ -39,10 +39,11 @@ void LeggedTextCommandController::updateLatestObservation(const Observations& ob
 }
 
 // Retrieve the latest action produced by the model thread
-bool LeggedTextCommandController::retrieveLatestAction(Eigen::VectorXd& action) {
+bool LeggedTextCommandController::retrieveLatestAction(ModelReturns& model_returns_struct) {
   std::lock_guard<std::mutex> lock(actionMutex_);
   if (actionAvailable_) {
-    action = latestAction_;
+    // action = latestAction_;
+    model_returns_struct = latestModelReturns_;
     actionAvailable_ = false;
     return true;
   }
@@ -66,9 +67,10 @@ void LeggedTextCommandController::modelThreadFunction() {
     }
 
     // Run model inference
-    Eigen::VectorXd action;
+    // Eigen::VectorXd action;
+    ModelReturns modelReturns;
     try {
-      action = playModel(currentObs);
+      modelReturns = playModel(currentObs);
     } catch (const std::exception& e) {
       RCLCPP_ERROR(get_node()->get_logger(), "Model inference failed: %s", e.what());
       continue; // Skip to the next iteration
@@ -76,7 +78,8 @@ void LeggedTextCommandController::modelThreadFunction() {
 
     {
       std::lock_guard<std::mutex> lock(actionMutex_);
-      latestAction_ = action;
+      // latestAction_ = modelReturns.actions;
+      latestModelReturns_ = modelReturns;
       actionAvailable_ = true;
     }
   }
@@ -96,6 +99,14 @@ LeggedTextCommandController::~LeggedTextCommandController() {
       std::lock_guard<std::mutex> lock(obsFileMutex_);
       obsJsonFile_ << std::endl << "  ]" << std::endl << "}" << std::endl;
       obsJsonFile_.close();
+    }
+  }
+
+  if (logLatent_ == true && latentJsonFile_.is_open()) {
+    {
+      std::lock_guard<std::mutex> lock(latentFileMutex_);
+      latentJsonFile_ << std::endl << "  ]" << std::endl << "}" << std::endl;
+      latentJsonFile_.close();
     }
   }
 }
@@ -179,9 +190,26 @@ controller_interface::return_type LeggedTextCommandController::update(const rclc
   }
 
   // Retrieve actions from the model thread if available
-  Eigen::VectorXd latestAction;
-  if (retrieveLatestAction(latestAction)) {
-    lastActions_ = latestAction;
+  // Eigen::VectorXd latestAction;
+  ModelReturns latestModelReturns;
+  if (retrieveLatestAction(latestModelReturns)) {
+
+    // Serialize and write latents to JSON
+    if (logLatent_ == true) {
+      std::lock_guard<std::mutex> lock(latentFileMutex_);
+      json j_latent;
+      j_latent["timestamp"] = time.seconds(); // Assuming you want to record the timestamp
+      j_latent["latents"] = latestModelReturns.latents;
+      
+      // Add comma if not the first entry
+      if (latentJsonFile_.tellp() > 0) {
+        latentJsonFile_ << "," << std::endl;
+      }
+      
+      latentJsonFile_ << "    " << j_latent.dump(4); // Pretty print with 4-space indentation
+    }
+
+    lastActions_ = latestModelReturns.actions;
 
     if (actionType_ == "position_absolute") {
       for (Eigen::Index i = 0; i < lastActions_.size(); ++i) {
@@ -313,6 +341,30 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_configure(c
     std::cout << "Observations JSON file path: " << obsFilePath_ << std::endl;
     obsJsonFile_ << "{" << std::endl;
     obsJsonFile_ << "  \"observations\": [" << std::endl;
+  }
+
+  // For the latent JSON file
+  logLatent_ = get_node()->get_parameter("log.log_latent").as_bool();
+  if (logLatent_ == true) {
+    // Get the size of the latent vector
+    latentSize_ = get_node()->get_parameter("log.latent_size").as_int();
+    latentRecordTime_ = get_node()->get_parameter("log.latent_record_time").as_double();
+
+    std::filesystem::path cmdPath(command_file_path);
+    std::filesystem::path dirPath = cmdPath.parent_path();
+    
+    // Set the latent JSON file path
+    latentFilePath_ = (dirPath / "latent.json").string();
+
+    // Open the JSON file for writing
+    latentJsonFile_.open(latentFilePath_, std::ios::out | std::ios::trunc);
+    if (!latentJsonFile_.is_open()) {
+      RCLCPP_ERROR(get_node()->get_logger(), "Failed to open latent JSON file: %s", latentFilePath_.c_str());
+      return controller_interface::CallbackReturn::ERROR;
+    }
+    std::cout << "Latent JSON file path: " << latentFilePath_ << std::endl;
+    latentJsonFile_ << "{" << std::endl;
+    latentJsonFile_ << "  \"latent\": [" << std::endl;
   }
 
   // Retrieve tasks and durations
@@ -521,7 +573,9 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_deactivate(
   // Reset action availability
   {
     std::lock_guard<std::mutex> lock(actionMutex_);
-    latestAction_.setZero();
+    // latestAction_.setZero();
+    latestModelReturns_.actions.setZero();
+    latestModelReturns_.latents.setZero();
     actionAvailable_ = false;
   }
 
@@ -530,6 +584,12 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_deactivate(
     std::lock_guard<std::mutex> lock(obsFileMutex_);
     obsJsonFile_ << std::endl << "  ]" << std::endl << "}" << std::endl;
     obsJsonFile_.close();
+  }
+
+  if (logLatent_ == true) {
+    std::lock_guard<std::mutex> lock(latentFileMutex_);
+    latentJsonFile_ << std::endl << "  ]" << std::endl << "}" << std::endl;
+    latentJsonFile_.close();
   }
 
   // Release the buffer
@@ -653,7 +713,7 @@ vector_t LeggedTextCommandController::updateObsBuffer(const vector_t& currentObs
   return obsHistory;
 }
 
-vector_t LeggedTextCommandController::playModel(const Observations& obsStructure) const {
+ModelReturns LeggedTextCommandController::playModel(const Observations& obsStructure) const {
   auto observations = obsStructure.observations;
   auto currentProprioception = obsStructure.currentProprioception;
   // clang-format on
@@ -670,13 +730,24 @@ vector_t LeggedTextCommandController::playModel(const Observations& obsStructure
                                                                    inputShapes_[0].data(), inputShapes_[0].size()));
   // run inference
   const Ort::RunOptions runOptions;
-  std::vector<Ort::Value> outputValues = sessionPtr_->Run(runOptions, inputNames_.data(), inputValues.data(), 1, outputNames_.data(), 1);
+  std::vector<Ort::Value> outputValues = sessionPtr_->Run(runOptions, inputNames_.data(), inputValues.data(), inputNames_.size(), outputNames_.data(), outputNames_.size());
+
+  ModelReturns model_returns_struct;
 
   vector_t actions(lastActions_.size());
   for (Eigen::Index i = 0; i < actions.size(); ++i) {
     actions[i] = outputValues[0].At<tensor_element_t>({0, static_cast<long int>(i)});
   }
-  return actions;
+  model_returns_struct.actions = actions;
+
+  if (logLatent_ == true) {
+    vector_t latent(latentSize_);
+    for (Eigen::Index i = 0; i < latent.size(); ++i) {
+      latent[i] = outputValues[1].At<tensor_element_t>({0, static_cast<long int>(i)});
+    }
+    model_returns_struct.latents = latent;
+  }
+  return model_returns_struct;
 }
 
 vector_t LeggedTextCommandController::remapJointOrder(const vector_t & raw_vector) const
