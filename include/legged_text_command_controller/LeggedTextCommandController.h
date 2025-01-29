@@ -72,6 +72,12 @@ class LeggedTextCommandController : public ControllerBase {
   std::mutex actionMutex_;
   bool actionAvailable_{false};
 
+  // Obs recording
+  bool logObs_;
+  std::ofstream obsJsonFile_;
+  std::string obsFilePath_;
+  std::mutex obsFileMutex_;
+
 
   // Onnx
   std::shared_ptr<Ort::Env> onnxEnvPrt_;

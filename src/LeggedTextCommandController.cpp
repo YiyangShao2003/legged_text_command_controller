@@ -90,6 +90,14 @@ LeggedTextCommandController::~LeggedTextCommandController() {
   if (modelThread_.joinable()) {
     modelThread_.join();
   }
+
+  if (logObs_ == true && obsJsonFile_.is_open()) {
+    {
+      std::lock_guard<std::mutex> lock(obsFileMutex_);
+      obsJsonFile_ << std::endl << "  ]" << std::endl << "}" << std::endl;
+      obsJsonFile_.close();
+    }
+  }
 }
 
 void printInputsOutputs(const std::vector<const char*>& inputNames, const std::vector<std::vector<int64_t>>& inputShapes,
@@ -136,7 +144,7 @@ controller_interface::return_type LeggedTextCommandController::update(const rclc
     double elapsed_seconds = (time - lastCommandTime_).seconds();
     // Check if the current command duration has elapsed
     if (elapsed_seconds >= commandDurationList_[commandIndex_]) {
-      commandIndex_++; // Move to the next command
+      commandIndex_++; // Move obsJsonFile_to the next command
       if (commandIndex_ < commandList_.size()) {
         command_ = commandList_[commandIndex_]; // Update to the next command
         lastCommandTime_ = time; // Reset the timer for the new command
@@ -153,6 +161,21 @@ controller_interface::return_type LeggedTextCommandController::update(const rclc
   if (firstUpdate_ || (time - lastPlayTime_).seconds() >= 1. / policyFrequency_) {
     auto obs_struct = getObservations();
     updateLatestObservation(obs_struct);
+      
+    // Serialize and write obs_struct to JSON
+    if (logObs_ == true) {
+      std::lock_guard<std::mutex> lock(obsFileMutex_);
+      json j_obs;
+      j_obs["timestamp"] = time.seconds(); // Assuming you want to record the timestamp
+      j_obs["currentProprioception"] = obs_struct.currentProprioception;
+      
+      // Add comma if not the first entry
+      if (obsJsonFile_.tellp() > 0) {
+        obsJsonFile_ << "," << std::endl;
+      }
+      
+      obsJsonFile_ << "    " << j_obs.dump(4); // Pretty print with 4-space indentation
+    }
   }
 
   // Retrieve actions from the model thread if available
@@ -270,6 +293,27 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_configure(c
 
   json dataSet;
   commandFile >> dataSet;
+
+  // For the observations JSON file
+  // Determine the directory of the command file
+  logObs_ = get_node()->get_parameter("log.log_obs").as_bool();
+  if (logObs_ == true) {
+    std::filesystem::path cmdPath(command_file_path);
+    std::filesystem::path dirPath = cmdPath.parent_path();
+    
+    // Set the observations JSON file path
+    obsFilePath_ = (dirPath / "observations.json").string();
+
+    // Open the JSON file for writing
+    obsJsonFile_.open(obsFilePath_, std::ios::out | std::ios::trunc);
+    if (!obsJsonFile_.is_open()) {
+      RCLCPP_ERROR(get_node()->get_logger(), "Failed to open observations JSON file: %s", obsFilePath_.c_str());
+      return controller_interface::CallbackReturn::ERROR;
+    }
+    std::cout << "Observations JSON file path: " << obsFilePath_ << std::endl;
+    obsJsonFile_ << "{" << std::endl;
+    obsJsonFile_ << "  \"observations\": [" << std::endl;
+  }
 
   // Retrieve tasks and durations
   auto tasks = get_node()->get_parameter("command.task").as_string_array();
@@ -479,6 +523,13 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_deactivate(
     std::lock_guard<std::mutex> lock(actionMutex_);
     latestAction_.setZero();
     actionAvailable_ = false;
+  }
+
+  // Close the JSON array and file
+  if (logObs_ == true) {
+    std::lock_guard<std::mutex> lock(obsFileMutex_);
+    obsJsonFile_ << std::endl << "  ]" << std::endl << "}" << std::endl;
+    obsJsonFile_.close();
   }
 
   // Release the buffer
