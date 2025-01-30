@@ -46,6 +46,7 @@ raw_data = {
 dataset = {}
 
 for task_name, caption in raw_data.items():
+    print(f"Processing {caption}")
     cpation_embedding = clip_model.encode_text(clip.tokenize(caption).to(device)).detach().cpu().numpy()
     dataset[task_name] = {
         "caption": caption,
