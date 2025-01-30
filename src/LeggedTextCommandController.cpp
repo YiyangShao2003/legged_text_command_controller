@@ -195,19 +195,35 @@ controller_interface::return_type LeggedTextCommandController::update(const rclc
   if (retrieveLatestAction(latestModelReturns)) {
 
     // Serialize and write latents to JSON
-    if (logLatent_ == true) {
-      std::lock_guard<std::mutex> lock(latentFileMutex_);
-      json j_latent;
-      j_latent["timestamp"] = time.seconds(); // Assuming you want to record the timestamp
-      j_latent["latents"] = latestModelReturns.latents;
-      
-      // Add comma if not the first entry
-      if (latentJsonFile_.tellp() > 0) {
-        latentJsonFile_ << "," << std::endl;
+    if (logLatent_ && latentLoggingActive_) {
+      double elapsed_time = (time - latentLoggingStartTime_).seconds();
+
+      if (elapsed_time <= latentRecordTime_) {
+        std::lock_guard<std::mutex> lock(latentFileMutex_);
+        json j_latent;
+        j_latent["timestamp"] = time.seconds(); // Assuming you want to record the timestamp
+        j_latent["latents"] = latestModelReturns.latents;
+
+        // Add comma if not the first entry
+        if (latentJsonFile_.tellp() > 0) {
+          latentJsonFile_ << "," << std::endl;
+        }
+
+        latentJsonFile_ << "    " << j_latent.dump(4); // Pretty print with 4-space indentation
+      } else {
+        // Stop logging latent vectors
+        latentLoggingActive_ = false;
+
+        // Finalize the JSON file
+        {
+          std::lock_guard<std::mutex> lock(latentFileMutex_);
+          latentJsonFile_ << std::endl << "  ]" << std::endl << "}" << std::endl;
+          latentJsonFile_.close();
+        }
+
+        RCLCPP_INFO(get_node()->get_logger(), "Stopped recording latent vectors after %.2f seconds.", latentRecordTime_);
       }
-      
-      latentJsonFile_ << "    " << j_latent.dump(4); // Pretty print with 4-space indentation
-    }
+      }
 
     lastActions_ = latestModelReturns.actions;
 
@@ -555,6 +571,12 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_activate(co
   // Start the model thread
   modelThreadRunning_ = true;
   modelThread_ = std::thread(&LeggedTextCommandController::modelThreadFunction, this);
+
+  // Initialize latent logging start time and activate logging
+  if (logLatent_) {
+    latentLoggingStartTime_ = get_node()->now();
+    latentLoggingActive_ = true;
+  }
 
   return controller_interface::CallbackReturn::SUCCESS;
 }

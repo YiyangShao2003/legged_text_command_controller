@@ -91,6 +91,8 @@ class LeggedTextCommandController : public ControllerBase {
   std::mutex latentFileMutex_;
   size_t latentSize_;
   scalar_t latentRecordTime_;
+  rclcpp::Time latentLoggingStartTime_;  
+  bool latentLoggingActive_ = false;     
 
 
   // Onnx
