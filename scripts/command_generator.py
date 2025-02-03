@@ -39,19 +39,26 @@ raw_data = {
     "task85": "a man strums an instrument with his right hand",
     "task87": "a person standing brings hands together in front of him to applaud", # good
     
-    "task101": "a man walks backward, and he waves his right hand",
-    "task102": "then he turns right and walks forward",
+    "task109": "he is waving with his left hand",
+    
+    "task101": "a person moves forward",
+    "task102": "a person walks forward, then takes three steps backward",
+    "task103": "a person walks straight, turns around, and walks back slowly",
+    "task104": "a person moves ahead",
+    "task105": "a person stops",
+    "task106": "A person walks forward briskly then stops",
+    "task107": "A man waves his right hand",
 }
 
 dataset = {}
 
 for task_name, caption in raw_data.items():
-    print(f"Processing {caption}")
+    print(f"{caption}")
     cpation_embedding = clip_model.encode_text(clip.tokenize(caption).to(device)).detach().cpu().numpy()
     dataset[task_name] = {
         "caption": caption,
         "embedding": cpation_embedding.tolist()
     }
     
-with open("dataset.json", "w") as f:
+with open("/home/syy/2025/ws_textcommand_deploy/src/unitree_ros2/unitree_description/config/g1/dataset.json", "w") as f:
     json.dump(dataset, f)
