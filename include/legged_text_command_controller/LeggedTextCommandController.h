@@ -94,14 +94,30 @@ class LeggedTextCommandController : public ControllerBase {
   rclcpp::Time latentLoggingStartTime_;  
   bool latentLoggingActive_ = false;     
 
-
   // Onnx
-  std::shared_ptr<Ort::Env> onnxEnvPrt_;
-  std::unique_ptr<Ort::Session> sessionPtr_;
-  std::vector<const char*> inputNames_;
-  std::vector<const char*> outputNames_;
-  std::vector<std::vector<int64_t>> inputShapes_;
-  std::vector<std::vector<int64_t>> outputShapes_;
+  // std::shared_ptr<Ort::Env> onnxEnvPrt_;
+  // std::unique_ptr<Ort::Session> sessionPtr_;
+  // std::vector<const char*> inputNames_;
+  // std::vector<const char*> outputNames_;
+  // std::vector<std::vector<int64_t>> inputShapes_;
+  // std::vector<std::vector<int64_t>> outputShapes_;
+
+
+  // Onnx Encoder
+  std::shared_ptr<Ort::Env> onnxEncoderEnvPrt_;
+  std::unique_ptr<Ort::Session> sessionEncoderPtr_;
+  std::vector<const char*> inputEncoderNames_;
+  std::vector<const char*> outputEncoderNames_;
+  std::vector<std::vector<int64_t>> inputEncoderShapes_;
+  std::vector<std::vector<int64_t>> outputEncoderShapes_;
+
+  // Onnx Decoder
+  std::shared_ptr<Ort::Env> onnxDecoderEnvPrt_;
+  std::unique_ptr<Ort::Session> sessionDecoderPtr_;
+  std::vector<const char*> inputDecoderNames_;
+  std::vector<const char*> outputDecoderNames_;
+  std::vector<std::vector<int64_t>> inputDecoderShapes_;
+  std::vector<std::vector<int64_t>> outputDecoderShapes_;
 
   vector_t lastActions_;
   std::vector<std::string> jointNameInPolicy_;

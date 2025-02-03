@@ -271,27 +271,49 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_configure(c
   }
 
   // Onnx
-  std::string policyPath{};
-  get_node()->get_parameter("policy.path", policyPath);
+  std::string policyEncoderPath{};
+  std::string policyDecoderPath{};
+  get_node()->get_parameter("policy.encoder_path", policyEncoderPath);
+  get_node()->get_parameter("policy.decoder_path", policyDecoderPath);
   get_node()->get_parameter("policy.frequency", policyFrequency_);
-  onnxEnvPrt_ = std::make_shared<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "LeggedTextCommandController");
+  std::cout << "encoder path: " <<  policyEncoderPath.c_str() << std::endl;
+  std::cout << "decoder path: " <<  policyDecoderPath.c_str() << std::endl;
+  onnxEncoderEnvPrt_ = std::make_shared<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "LeggedTextCommandControllerEncoder");
+  onnxDecoderEnvPrt_ = std::make_shared<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "LeggedTextCommandControllerDecoder");
   Ort::SessionOptions sessionOptions;
   sessionOptions.SetInterOpNumThreads(1);
-  sessionPtr_ = std::make_unique<Ort::Session>(*onnxEnvPrt_, policyPath.c_str(), sessionOptions);
-  inputNames_.clear();
-  outputNames_.clear();
-  inputShapes_.clear();
-  outputShapes_.clear();
-  Ort::AllocatorWithDefaultOptions allocator;
-  for (size_t i = 0; i < sessionPtr_->GetInputCount(); i++) {
-    inputNames_.push_back(sessionPtr_->GetInputName(i, allocator));
-    inputShapes_.push_back(sessionPtr_->GetInputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
+  // Encoder Session
+  sessionEncoderPtr_ = std::make_unique<Ort::Session>(*onnxEncoderEnvPrt_, policyEncoderPath.c_str(), sessionOptions);
+  inputEncoderNames_.clear();
+  outputEncoderNames_.clear();
+  inputEncoderShapes_.clear();
+  outputEncoderShapes_.clear();
+  Ort::AllocatorWithDefaultOptions allocatorEncoder;
+  for (size_t i = 0; i < sessionEncoderPtr_->GetInputCount(); i++) {
+    inputEncoderNames_.push_back(sessionEncoderPtr_->GetInputName(i, allocatorEncoder));
+    inputEncoderShapes_.push_back(sessionEncoderPtr_->GetInputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
   }
-  for (size_t i = 0; i < sessionPtr_->GetOutputCount(); i++) {
-    outputNames_.push_back(sessionPtr_->GetOutputName(i, allocator));
-    outputShapes_.push_back(sessionPtr_->GetOutputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
+  for (size_t i = 0; i < sessionEncoderPtr_->GetOutputCount(); i++) {
+    outputEncoderNames_.push_back(sessionEncoderPtr_->GetOutputName(i, allocatorEncoder));
+    outputEncoderShapes_.push_back(sessionEncoderPtr_->GetOutputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
   }
-  printInputsOutputs(inputNames_, inputShapes_, outputNames_, outputShapes_);
+  printInputsOutputs(inputEncoderNames_, inputEncoderShapes_, outputEncoderNames_, outputEncoderShapes_);
+  // Decoder Sussion
+  sessionDecoderPtr_ = std::make_unique<Ort::Session>(*onnxDecoderEnvPrt_, policyDecoderPath.c_str(), sessionOptions);
+  inputDecoderNames_.clear();
+  outputDecoderNames_.clear();
+  inputDecoderShapes_.clear();
+  outputDecoderShapes_.clear();
+  Ort::AllocatorWithDefaultOptions allocatorDecoder;
+  for (size_t i = 0; i < sessionDecoderPtr_->GetInputCount(); i++) {
+    inputDecoderNames_.push_back(sessionDecoderPtr_->GetInputName(i, allocatorDecoder));
+    inputDecoderShapes_.push_back(sessionDecoderPtr_->GetInputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
+  }
+  for (size_t i = 0; i < sessionDecoderPtr_->GetOutputCount(); i++) {
+    outputDecoderNames_.push_back(sessionDecoderPtr_->GetOutputName(i, allocatorDecoder));
+    outputDecoderShapes_.push_back(sessionDecoderPtr_->GetOutputTypeInfo(i).GetTensorTypeAndShapeInfo().GetShape());
+  }
+  printInputsOutputs(inputDecoderNames_, inputDecoderShapes_, outputDecoderNames_, outputDecoderShapes_);
 
   const size_t numJoints = leggedModel_->getLeggedModel()->getJointNames().size();
 
@@ -325,7 +347,7 @@ controller_interface::CallbackReturn LeggedTextCommandController::on_configure(c
 
   lastActions_.setZero(numJoints);
   command_ = vector_t::Zero(512);
-  RCLCPP_INFO_STREAM(rclcpp::get_logger("LeggedTextCommandController"), "Load Onnx model from" << policyPath << " successfully !");
+  RCLCPP_INFO_STREAM(rclcpp::get_logger("LeggedTextCommandController"), "Load Onnx model from" << policyEncoderPath << " successfully !");
 
   // Command
   const auto command_file_path = get_node()->get_parameter("command.command_file_path").as_string();
@@ -738,7 +760,8 @@ vector_t LeggedTextCommandController::updateObsBuffer(const vector_t& currentObs
 ModelReturns LeggedTextCommandController::playModel(const Observations& obsStructure) const {
   auto observations = obsStructure.observations;
   auto currentProprioception = obsStructure.currentProprioception;
-  // clang-format on
+  
+  // Prepare encoder input
   std::vector<tensor_element_t> observationTensor;
   for (const double i : currentProprioception) {
     observationTensor.push_back(static_cast<tensor_element_t>(i));
@@ -746,14 +769,41 @@ ModelReturns LeggedTextCommandController::playModel(const Observations& obsStruc
   for (const double i : observations) {
     observationTensor.push_back(static_cast<tensor_element_t>(i));
   }
+  
   Ort::MemoryInfo memoryInfo = Ort::MemoryInfo::CreateCpu(OrtAllocatorType::OrtArenaAllocator, OrtMemType::OrtMemTypeDefault);
-  std::vector<Ort::Value> inputValues;
-  inputValues.push_back(Ort::Value::CreateTensor<tensor_element_t>(memoryInfo, observationTensor.data(), observationTensor.size(),
-                                                                   inputShapes_[0].data(), inputShapes_[0].size()));
-  // run inference
+  std::vector<Ort::Value> inputEncoderValues;
+  inputEncoderValues.push_back(Ort::Value::CreateTensor<tensor_element_t>(memoryInfo, observationTensor.data(), observationTensor.size(),
+                                                                   inputEncoderShapes_[0].data(), inputEncoderShapes_[0].size()));
+  
+  // Run encoder inference
   const Ort::RunOptions runOptions;
-  std::vector<Ort::Value> outputValues = sessionPtr_->Run(runOptions, inputNames_.data(), inputValues.data(), inputNames_.size(), outputNames_.data(), outputNames_.size());
+  std::vector<Ort::Value> muValues = sessionEncoderPtr_->Run(runOptions, inputEncoderNames_.data(), inputEncoderValues.data(), 
+                                                            inputEncoderNames_.size(), outputEncoderNames_.data(), outputEncoderNames_.size());
 
+  // Prepare decoder input by concatenating mu with current proprioception
+  std::vector<tensor_element_t> decoderInputTensor;
+  
+  // Add mu values to decoder input
+  size_t muSize = 128;
+  for (size_t i = 0; i < muSize; i++) {
+    decoderInputTensor.push_back(muValues[0].At<tensor_element_t>({0, static_cast<long>(i)}));
+  }
+  
+  // Add current proprioception to decoder input
+  for (const double i : currentProprioception) {
+    decoderInputTensor.push_back(static_cast<tensor_element_t>(i));
+  }
+
+  // Create decoder input tensor
+  std::vector<Ort::Value> inputDecoderValues;
+  inputDecoderValues.push_back(Ort::Value::CreateTensor<tensor_element_t>(memoryInfo, decoderInputTensor.data(), decoderInputTensor.size(),
+                                                                   inputDecoderShapes_[0].data(), inputDecoderShapes_[0].size()));
+
+  // Run decoder inference
+  std::vector<Ort::Value> outputValues = sessionDecoderPtr_->Run(runOptions, inputDecoderNames_.data(), inputDecoderValues.data(),
+                                                                inputDecoderNames_.size(), outputDecoderNames_.data(), outputDecoderNames_.size());
+
+  // Process outputs
   ModelReturns model_returns_struct;
 
   vector_t actions(lastActions_.size());
@@ -765,7 +815,7 @@ ModelReturns LeggedTextCommandController::playModel(const Observations& obsStruc
   if (logLatent_ == true) {
     vector_t latent(latentSize_);
     for (Eigen::Index i = 0; i < latent.size(); ++i) {
-      latent[i] = outputValues[1].At<tensor_element_t>({0, static_cast<long int>(i)});
+      latent[i] = muValues[0].At<tensor_element_t>({0, static_cast<long int>(i)});
     }
     model_returns_struct.latents = latent;
   }
